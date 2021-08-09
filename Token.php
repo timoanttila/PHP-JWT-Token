@@ -21,8 +21,8 @@ class Token {
 		}
 		if (!empty($item)) {
 			if (preg_match('/Bearer\s(\S+)/', $item, $matches)){
-				if($this->validate($matches[1]) == 0) stop();
-				$this->item = $matches[1];
+				$this->validate($matches[1]);
+				$this->token = $matches[1];
 			}
 		} else stop();
 
@@ -32,54 +32,52 @@ class Token {
 		return $this->item;
 	}
 
-	function newToken($headers, $payload) {
+	function newToken($payload, $signature = null) {
 
 		$secret = $this->getKey();
 
-		$headers_encoded = base64url_encode(json_encode($headers));
+		$headers_encoded = base64_encode(json_encode(["alg" => "HS256", "typ" => "JWT"]));
 
-		$payload_encoded = base64url_encode(json_encode($payload));
+		if(is_object($payload) || is_array($payload)) $payload = json_encode($payload);
+		$payload_encoded = base64_encode($payload);
 
-		$signature = hash_hmac('SHA256', "$headers_encoded.$payload_encoded", $secret->Key, true);
-		$signature_encoded = base64url_encode($signature);
+		$signature_encoded = base64_encode(hash_hmac('SHA256', $headers_encoded .".". $payload_encoded, $secret->Key, true));
 
-		$jwt = "$headers_encoded.$payload_encoded.$signature_encoded";
+		if($signature && (string)$signature != (string)$signature_encoded) head(4, [
+			"status" => 400,
+			"fi" => "Tokenin allekirjoitus ei vastaa alkuperäistä.",
+			"en" => "Token signature is invalid."
+		]);
 
-		return $jwt;
+		$this->token = $headers_encoded .".". $payload_encoded .".". $signature_encoded;
+
+		return $this->token;
 	}
 
 	function validate($jwt) {
 
 		$secret = $this->getKey();
-
-		// split the jwt
 		$tokenParts = explode('.', $jwt);
 		$header = base64_decode($tokenParts[0]);
 		$payload = base64_decode($tokenParts[1]);
 		$signature_provided = $tokenParts[2];
 
-		// save user id
 		$item = json_decode($payload);
-		$this->user = $item->Id;
+		$this->userId = $item->id;
 
 		// check the expiration time - note this will cause an error if there is no 'exp' claim in the jwt
-		if(((int)$item->exp - time()) < 0) head(5);
+		$time = (int)$item->exp - time();
+		if($time < 0) head(5, [
+			"status" => 401,
+			"fi" => "Token ei ole voimassa.",
+			"en" => "Token is not valid."]
+		);
 
 		// build a signature based on the header and payload using the secret
-		$base64_url_header = $this->base64url_encode($header);
-		$base64_url_payload = $this->base64url_encode($payload);
-		$signature = hash_hmac('SHA256', $base64_url_header . "." . $base64_url_payload, $secret->Key, true);
-		$base64_url_signature = $this->base64url_encode($signature);
+		$readyToken = $this->newToken($payload, $signature_provided);
 
-		// verify it matches the signature provided in the jwt
-		$is_signature_valid = ($base64_url_signature === $signature_provided);
+		return TRUE;
 
-		return $is_token_expired || !$is_signature_valid ? FALSE : TRUE;
-
-	}
-
-	function base64url_encode($str) {
-		return rtrim(strtr(base64_encode($str), '+/', '-_'), '=');
 	}
 
 	function getKey(){
